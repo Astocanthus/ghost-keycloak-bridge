@@ -1,0 +1,27 @@
+{
+  "name": "ghost-keycloak-bridge",
+  "version": "1.0.0",
+  "description": "A bridge to authenticate Ghost members using Keycloak (OIDC)",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "keywords": [
+    "ghost",
+    "keycloak",
+    "sso",
+    "oidc",
+    "authentication"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.21.0",
+    "openid-client": "5.6.5",
+    "@tryghost/admin-api": "^1.13.9",
+    "cookie-parser": "^1.4.6",
+    "mysql2": "^3.9.0"
+  }
+}
