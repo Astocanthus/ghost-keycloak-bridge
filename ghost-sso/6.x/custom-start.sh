@@ -1,12 +1,39 @@
 #!/usr/bin/env node
 
+// Author: Benjamin Romeo (Astocanthus)
+// Contact: contact@low-layer.com
+
+// ============================================================================
+// custom-start.js
+// Ghost Admin UI patcher - Injects SSO login button at container startup
+//
+// Purpose:
+//   - Patches Ghost Admin frontend to add "Login with OIDC" button
+//   - Enables direct access to Keycloak SSO from the Ghost login screen
+//   - Eliminates need for users to manually type the Bridge URL
+//
+// Key Functions:
+//   - findFile(): Recursively searches for Ghost admin index.html
+//   - Injects client-side script that creates SSO button dynamically
+//   - Launches Ghost process after patching
+//
+// Characteristics:
+//   - Idempotent: checks for existing patch before applying
+//   - Non-destructive: only appends to existing HTML
+//   - Executes as entrypoint replacement in Ghost container
+// ============================================================================
+
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
 
-console.log("🛠️ [AUTO-PATCH] Démarrage du patcher de l'Admin UI...");
+console.log('🛠️  [AUTO-PATCH] Starting Ghost Admin UI patcher...');
 
-// 1. Définition du script client à injecter
+// ---------------------------------------------------------------------------
+// CLIENT-SIDE INJECTION SCRIPT
+// ---------------------------------------------------------------------------
+// This script is injected into Ghost's admin index.html and runs in the browser.
+// It observes DOM changes and injects the SSO button when the login form appears.
+
 const CLIENT_SCRIPT = `
 <script id="ghost-bridge-sso">
 (function() {
@@ -32,14 +59,29 @@ const CLIENT_SCRIPT = `
 </script>
 `;
 
-// 2. Recherche du fichier index.html
-// On cherche récursivement dans le dossier des versions car 'current' peut ne pas être encore lié
+// ---------------------------------------------------------------------------
+// FILE DISCOVERY
+// ---------------------------------------------------------------------------
+// Recursively searches for the target file in Ghost's version directory.
+// Required because 'current' symlink may not exist on first run.
+
+/**
+ * Recursively searches for a file ending with the specified suffix.
+ * @param {string} startPath - Directory to start searching from
+ * @param {string} filter - File path suffix to match (e.g., 'core/built/admin/index.html')
+ * @returns {string|undefined} Full path to the found file, or undefined
+ */
 function findFile(startPath, filter) {
-    if (!fs.existsSync(startPath)) return;
+    if (!fs.existsSync(startPath)) {
+        return undefined;
+    }
+
     const files = fs.readdirSync(startPath);
+
     for (const file of files) {
         const filename = path.join(startPath, file);
         const stat = fs.lstatSync(filename);
+
         if (stat.isDirectory()) {
             const found = findFile(filename, filter);
             if (found) return found;
@@ -47,42 +89,52 @@ function findFile(startPath, filter) {
             return filename;
         }
     }
+
+    return undefined;
 }
 
+// ---------------------------------------------------------------------------
+// PATCHING LOGIC
+// ---------------------------------------------------------------------------
+// Locates Ghost admin index.html and injects the SSO button script.
+
 try {
-    // On cherche dans /var/lib/ghost/versions (là où l'image stocke le code)
-    // On cherche "core/built/admin/index.html"
     const versionsDir = '/var/lib/ghost/versions';
     const adminFile = findFile(versionsDir, 'core/built/admin/index.html');
 
     if (adminFile) {
-        console.log(`✅ Fichier Admin trouvé : ${adminFile}`);
+        console.log(`✅ Admin file found: ${adminFile}`);
+
         let content = fs.readFileSync(adminFile, 'utf8');
 
+        // Idempotency check: skip if already patched
         if (!content.includes('ghost-bridge-sso')) {
-            // Injection propre juste avant la fin du body
             const newContent = content.replace('</body>', `${CLIENT_SCRIPT}</body>`);
             fs.writeFileSync(adminFile, newContent);
-            console.log("✨ Patch appliqué avec succès !");
+            console.log('✨ Patch applied successfully!');
         } else {
-            console.log("ℹ️ Fichier déjà patché.");
+            console.log('ℹ️  File already patched, skipping.');
         }
     } else {
-        console.error("⚠️ Impossible de trouver index.html (Ghost a peut-être changé sa structure).");
+        console.error('⚠️  Unable to find index.html (Ghost structure may have changed).');
     }
 
 } catch (e) {
-    console.error("❌ Erreur pendant le patch :", e.message);
+    console.error('❌ Error during patching:', e.message);
 }
 
-console.log("🚀 Lancement de Ghost...");
-// 3. Lancement du processus Ghost officiel
-// On remplace le processus actuel par Ghost pour gérer les signaux (PID 1)
+// ---------------------------------------------------------------------------
+// GHOST PROCESS LAUNCH
+// ---------------------------------------------------------------------------
+// Starts the official Ghost process after patching.
+// Uses require() to maintain PID 1 for proper signal handling.
+
+console.log('🚀 Launching Ghost...');
+
 try {
     require('/var/lib/ghost/current/index.js');
 } catch (e) {
-    // Fallback si 'current' n'est pas encore lié (premier run), on laisse l'entrypoint gérer
-    // Note: L'entrypoint Docker de Ghost lance normalement "node current/index.js"
-    // Ici, nous sommes déjà dans l'exécution de node.
-    console.log("Lancement via require direct échoué, tentative standard...");
+    // Fallback if 'current' symlink doesn't exist yet (first run scenario)
+    // The Docker entrypoint will handle this case
+    console.log('⚠️  Direct require failed, Ghost will be launched by entrypoint.');
 }
