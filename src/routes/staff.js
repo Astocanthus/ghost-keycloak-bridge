@@ -22,6 +22,7 @@
 
 import express from 'express';
 import crypto from 'crypto';
+import { buildAuthorizationUrl, authorizationCodeGrant } from 'openid-client';
 import { query } from '../lib/db.js';
 import { generateObjectId, generateSessionId } from '../lib/utils.js';
 import { createLogger } from '../lib/logger.js';
@@ -41,12 +42,12 @@ const log = createLogger('staff');
  * @returns {string} Signed cookie string
  */
 const signCookie = (val, secret) => {
-    const signature = crypto
-        .createHmac('sha256', secret)
-        .update(val)
-        .digest('base64')
-        .replace(/=+$/, '');
-    return 's:' + val + '.' + signature;
+  const signature = crypto
+    .createHmac('sha256', secret)
+    .update(val)
+    .digest('base64')
+    .replace(/=+$/, '');
+  return 's:' + val + '.' + signature;
 };
 
 // ---------------------------------------------------------------------------
@@ -54,144 +55,147 @@ const signCookie = (val, secret) => {
 // ---------------------------------------------------------------------------
 // Returns an Express router configured with the provided OIDC client.
 
-export default function (oidcClient) {
-    const router = express.Router();
+export default function (oidcConfig) {
+  const router = express.Router();
 
-    const blogUrl = (process.env.BLOG_PUBLIC_URL || '').replace(/\/$/, '');
+  const blogUrl = (process.env.BLOG_PUBLIC_URL || '').replace(/\/$/, '');
 
-    log.info('Staff routes initialized', { blogUrl });
+  log.info('Staff routes initialized', { blogUrl });
 
-    // ---------------------------------------------------------------------------
-    // LOGIN ENDPOINT
-    // ---------------------------------------------------------------------------
+  // ---------------------------------------------------------------------------
+  // LOGIN ENDPOINT
+  // ---------------------------------------------------------------------------
 
-    router.get('/login', (req, res) => {
-        const authUrl = oidcClient.authorizationUrl({
-            scope: 'openid email profile',
-            redirect_uri: process.env.STAFF_CALLBACK_URL
-        });
-
-        log.info('Staff login redirect', {
-            redirectUri: process.env.STAFF_CALLBACK_URL
-        });
-
-        res.redirect(authUrl);
+  router.get('/login', (req, res) => {
+    const authUrl = buildAuthorizationUrl(oidcConfig, {
+      scope: 'openid email profile',
+      redirect_uri: process.env.STAFF_CALLBACK_URL
     });
 
-    // ---------------------------------------------------------------------------
-    // OIDC CALLBACK ENDPOINT
-    // ---------------------------------------------------------------------------
+    log.info('Staff login redirect', {
+      redirectUri: process.env.STAFF_CALLBACK_URL
+    });
 
-    router.get('/callback', async (req, res) => {
-        log.http('Staff callback received', { query: Object.keys(req.query) });
+    res.redirect(authUrl.href);
+  });
 
-        try {
-            const params = oidcClient.callbackParams(req);
-            const tokenSet = await oidcClient.callback(process.env.STAFF_CALLBACK_URL, params);
-            const email = tokenSet.claims().email;
+  // ---------------------------------------------------------------------------
+  // OIDC CALLBACK ENDPOINT
+  // ---------------------------------------------------------------------------
 
-            log.info('Staff token received', { email });
+  router.get('/callback', async (req, res) => {
+    log.http('Staff callback received', { query: Object.keys(req.query) });
 
-            // Verify user exists in Ghost
-            const users = await query(
-                "SELECT id FROM users WHERE email = ? AND status IN ('active', 'warn-1', 'warn-2', 'warn-3', 'locked')",
-                [email]
-            );
+    try {
+      const currentUrl = new URL(req.protocol + '://' + req.get('host') + req.originalUrl);
+      const tokenSet = await authorizationCodeGrant(oidcConfig, currentUrl, {
+        redirect_uri: process.env.STAFF_CALLBACK_URL
+      });
+      const claims = tokenSet.claims();
+      const email = claims.email;
 
-            if (users.length === 0) {
-                log.warn('Staff user not found in Ghost', { email });
-                return res.redirect('/auth/admin/login?error=user_not_found');
-            }
+      log.info('Staff token received', { email });
 
-            const userId = users[0].id;
-            log.debug('Staff user found', { email, userId });
+      // Verify user exists in Ghost
+      const users = await query(
+        "SELECT id FROM users WHERE email = ? AND status IN ('active', 'warn-1', 'warn-2', 'warn-3', 'locked')",
+        [email]
+      );
 
-            // Retrieve Ghost session secret
-            const settings = await query("SELECT value FROM settings WHERE `key` = 'admin_session_secret'");
+      if (users.length === 0) {
+        log.warn('Staff user not found in Ghost', { email });
+        return res.redirect('/auth/admin/login?error=user_not_found');
+      }
 
-            if (settings.length === 0) {
-                log.error('admin_session_secret not found in Ghost settings');
-                return res.redirect('/auth/admin/login?error=fatal_config');
-            }
+      const userId = users[0].id;
+      log.debug('Staff user found', { email, userId });
 
-            const ghostSessionSecret = settings[0].value;
+      // Retrieve Ghost session secret
+      const settings = await query("SELECT value FROM settings WHERE `key` = 'admin_session_secret'");
 
-            // Generate session data
-            const sessionId = generateSessionId();
-            const rowId = generateObjectId();
-            const now = new Date();
-            const expiresAt = new Date(Date.now() + 15552000000); // 180 days
+      if (settings.length === 0) {
+        log.error('admin_session_secret not found in Ghost settings');
+        return res.redirect('/auth/admin/login?error=fatal_config');
+      }
 
-            // Extract real client IP
-            let userIp = req.headers['x-real-ip']
-                || req.headers['x-forwarded-for']
-                || req.socket.remoteAddress
-                || '127.0.0.1';
+      const ghostSessionSecret = settings[0].value;
 
-            if (userIp.includes(',')) {
-                userIp = userIp.split(',')[0].trim();
-            }
+      // Generate session data
+      const sessionId = generateSessionId();
+      const rowId = generateObjectId();
+      const now = new Date();
+      const expiresAt = new Date(Date.now() + 15552000000); // 180 days
 
-            const userAgent = req.headers['user-agent'] || 'Mozilla/5.0';
+      // Extract real client IP
+      let userIp = req.headers['x-real-ip']
+        || req.headers['x-forwarded-for']
+        || req.socket.remoteAddress
+        || '127.0.0.1';
 
-            log.debug('Session metadata', {
-                clientIp: userIp,
-                userAgent: userAgent.substring(0, 50)
-            });
+      if (userIp.includes(',')) {
+        userIp = userIp.split(',')[0].trim();
+      }
 
-            // Build session JSON
-            const sessionData = JSON.stringify({
-                cookie: {
-                    originalMaxAge: 15552000000,
-                    expires: expiresAt.toISOString(),
-                    secure: true,
-                    httpOnly: true,
-                    path: '/ghost',
-                    sameSite: 'none'
-                },
-                user_id: userId,
-                origin: blogUrl,
-                user_agent: userAgent,
-                ip: userIp,
-                verified: true
-            });
+      const userAgent = req.headers['user-agent'] || 'Mozilla/5.0';
 
-            // Insert session into database
-            await query(
-                `INSERT INTO sessions (id, session_id, user_id, session_data, created_at, updated_at) 
+      log.debug('Session metadata', {
+        clientIp: userIp,
+        userAgent: userAgent.substring(0, 50)
+      });
+
+      // Build session JSON
+      const sessionData = JSON.stringify({
+        cookie: {
+          originalMaxAge: 15552000000,
+          expires: expiresAt.toISOString(),
+          secure: true,
+          httpOnly: true,
+          path: '/ghost',
+          sameSite: 'none'
+        },
+        user_id: userId,
+        origin: blogUrl,
+        user_agent: userAgent,
+        ip: userIp,
+        verified: true
+      });
+
+      // Insert session into database
+      await query(
+        `INSERT INTO sessions (id, session_id, user_id, session_data, created_at, updated_at) 
                  VALUES (?, ?, ?, ?, ?, ?)`,
-                [rowId, sessionId, userId, sessionData, now, now]
-            );
+        [rowId, sessionId, userId, sessionData, now, now]
+      );
 
-            log.info('Staff session created', {
-                email,
-                userId,
-                sessionId: sessionId.substring(0, 8) + '...',
-                expiresAt: expiresAt.toISOString()
-            });
+      log.info('Staff session created', {
+        email,
+        userId,
+        sessionId: sessionId.substring(0, 8) + '...',
+        expiresAt: expiresAt.toISOString()
+      });
 
-            // Sign and set cookie
-            const signedCookie = signCookie(sessionId, ghostSessionSecret);
+      // Sign and set cookie
+      const signedCookie = signCookie(sessionId, ghostSessionSecret);
 
-            res.cookie('ghost-admin-api-session', signedCookie, {
-                httpOnly: true,
-                secure: true,
-                path: '/ghost',
-                maxAge: 15552000000,
-                sameSite: 'none'
-            });
+      res.cookie('ghost-admin-api-session', signedCookie, {
+        httpOnly: true,
+        secure: true,
+        path: '/ghost',
+        maxAge: 15552000000,
+        sameSite: 'none'
+      });
 
-            log.info('Staff login successful, redirecting to admin', { email });
-            res.redirect(`${blogUrl}/ghost/`);
+      log.info('Staff login successful, redirecting to admin', { email });
+      res.redirect(`${blogUrl}/ghost/`);
 
-        } catch (err) {
-            log.error('Staff callback failed', {
-                error: err.message,
-                stack: err.stack
-            });
-            res.redirect('/auth/admin/login?error=fatal');
-        }
-    });
+    } catch (err) {
+      log.error('Staff callback failed', {
+        error: err.message,
+        stack: err.stack
+      });
+      res.redirect('/auth/admin/login?error=fatal');
+    }
+  });
 
-    return router;
+  return router;
 }

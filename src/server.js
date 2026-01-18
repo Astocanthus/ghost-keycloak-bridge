@@ -23,7 +23,7 @@
 
 import express from 'express';
 import cookieParser from 'cookie-parser';
-import { Issuer } from 'openid-client';
+import { discovery } from 'openid-client';
 import memberRoutes from './routes/members.js';
 import staffRoutes from './routes/staff.js';
 import { createLogger } from './lib/logger.js';
@@ -47,64 +47,64 @@ app.use(cookieParser());
 // Discovers and configures OpenID Connect clients for both authentication realms.
 
 async function start() {
-    log.info('Starting Ghost Keycloak Bridge...');
-    log.debug('Configuration loaded', {
-        port: PORT,
-        blogUrl: process.env.BLOG_PUBLIC_URL,
-        ghostInternalUrl: process.env.GHOST_INTERNAL_URL,
-        memberIssuer: process.env.MEMBER_KEYCLOAK_ISSUER,
-        staffIssuer: process.env.STAFF_KEYCLOAK_ISSUER
+  log.info('Starting Ghost Keycloak Bridge...');
+  log.debug('Configuration loaded', {
+    port: PORT,
+    blogUrl: process.env.BLOG_PUBLIC_URL,
+    ghostInternalUrl: process.env.GHOST_INTERNAL_URL,
+    memberIssuer: process.env.MEMBER_KEYCLOAK_ISSUER,
+    staffIssuer: process.env.STAFF_KEYCLOAK_ISSUER
+  });
+
+  try {
+    // Member Realm: handles blog subscribers and free/paid members
+    log.info('Discovering Member OIDC issuer...', { issuer: process.env.MEMBER_KEYCLOAK_ISSUER });
+    const memberConfig = await discovery(
+      new URL(process.env.MEMBER_KEYCLOAK_ISSUER),
+      process.env.MEMBER_CLIENT_ID,
+      process.env.MEMBER_CLIENT_SECRET
+    );
+    log.info('Member OIDC client initialized');
+
+    // Staff Realm: handles Ghost admin panel access (editors, authors, admins)
+    log.info('Discovering Staff OIDC issuer...', { issuer: process.env.STAFF_KEYCLOAK_ISSUER });
+    const staffConfig = await discovery(
+      new URL(process.env.STAFF_KEYCLOAK_ISSUER),
+      process.env.STAFF_CLIENT_ID,
+      process.env.STAFF_CLIENT_SECRET
+    );
+    log.info('Staff OIDC client initialized');
+
+    // ---------------------------------------------------------------------------
+    // ROUTE MOUNTING
+    // ---------------------------------------------------------------------------
+    // Attaches realm-specific route handlers with their respective OIDC clients.
+
+    app.use('/auth/member', memberRoutes(memberConfig));
+    app.use('/auth/admin', staffRoutes(staffConfig));
+    log.debug('Routes mounted', { paths: ['/auth/member', '/auth/admin'] });
+
+    // ---------------------------------------------------------------------------
+    // HEALTH CHECK ENDPOINT
+    // ---------------------------------------------------------------------------
+
+    app.get('/health', (req, res) => {
+      res.json({ status: 'ok', timestamp: new Date().toISOString() });
     });
 
-    try {
-        // Member Realm: handles blog subscribers and free/paid members
-        log.info('Discovering Member OIDC issuer...', { issuer: process.env.MEMBER_KEYCLOAK_ISSUER });
-        const memberIssuer = await Issuer.discover(process.env.MEMBER_KEYCLOAK_ISSUER);
-        const memberClient = new memberIssuer.Client({
-            client_id: process.env.MEMBER_CLIENT_ID,
-            client_secret: process.env.MEMBER_CLIENT_SECRET
-        });
-        log.info('Member OIDC client initialized');
+    // ---------------------------------------------------------------------------
+    // SERVER START
+    // ---------------------------------------------------------------------------
+    // Binds to configured port after successful OIDC discovery.
 
-        // Staff Realm: handles Ghost admin panel access (editors, authors, admins)
-        log.info('Discovering Staff OIDC issuer...', { issuer: process.env.STAFF_KEYCLOAK_ISSUER });
-        const staffIssuer = await Issuer.discover(process.env.STAFF_KEYCLOAK_ISSUER);
-        const staffClient = new staffIssuer.Client({
-            client_id: process.env.STAFF_CLIENT_ID,
-            client_secret: process.env.STAFF_CLIENT_SECRET
-        });
-        log.info('Staff OIDC client initialized');
+    app.listen(PORT, () => {
+      log.info('Ghost Keycloak Bridge started', { port: PORT });
+    });
 
-        // ---------------------------------------------------------------------------
-        // ROUTE MOUNTING
-        // ---------------------------------------------------------------------------
-        // Attaches realm-specific route handlers with their respective OIDC clients.
-
-        app.use('/auth/member', memberRoutes(memberClient));
-        app.use('/auth/admin', staffRoutes(staffClient));
-        log.debug('Routes mounted', { paths: ['/auth/member', '/auth/admin'] });
-
-        // ---------------------------------------------------------------------------
-        // HEALTH CHECK ENDPOINT
-        // ---------------------------------------------------------------------------
-
-        app.get('/health', (req, res) => {
-            res.json({ status: 'ok', timestamp: new Date().toISOString() });
-        });
-
-        // ---------------------------------------------------------------------------
-        // SERVER START
-        // ---------------------------------------------------------------------------
-        // Binds to configured port after successful OIDC discovery.
-
-        app.listen(PORT, () => {
-            log.info('Ghost Keycloak Bridge started', { port: PORT });
-        });
-
-    } catch (err) {
-        log.error('Failed to start server', { error: err.message, stack: err.stack });
-        process.exit(1);
-    }
+  } catch (err) {
+    log.error('Failed to start server', { error: err.message, stack: err.stack });
+    process.exit(1);
+  }
 }
 
 start();
