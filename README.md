@@ -122,6 +122,7 @@ services:
       # Server
       - PORT=3000
       - BLOG_PUBLIC_URL=https://blog.example.com
+      - GHOST_INTERNAL_URL=http://ghost:2368
       
       # Database (Ghost MySQL)
       - DB_HOST=ghost-db
@@ -159,7 +160,8 @@ services:
 | Variable | Description | Required |
 |----------|-------------|----------|
 | `PORT` | Server listen port | No (default: 3000) |
-| `BLOG_PUBLIC_URL` | Public URL of your Ghost blog | Yes |
+| `BLOG_PUBLIC_URL` | Public URL of your Ghost blog (for browser redirects) | Yes |
+| `GHOST_INTERNAL_URL` | Internal Docker URL for Ghost API calls | Yes |
 | `DB_HOST` | Ghost database hostname | Yes |
 | `DB_USER` | Database username | Yes |
 | `DB_PASSWORD` | Database password | Yes |
@@ -174,6 +176,20 @@ services:
 | `STAFF_CLIENT_SECRET` | Staff realm client secret | Yes |
 | `STAFF_CALLBACK_URL` | Staff callback URL | Yes |
 | `GHOST_ADMIN_API_KEY` | Ghost Admin API integration key | Yes |
+
+### URL Configuration
+
+The bridge uses two different URLs for Ghost communication:
+
+| Variable | Purpose | Example |
+|----------|---------|---------|
+| `BLOG_PUBLIC_URL` | Browser redirects, cookie domain | `https://blog.example.com` |
+| `GHOST_INTERNAL_URL` | API calls via Docker network | `http://ghost-server:2368` |
+
+This separation is required because:
+- Ghost redirects requests when the `Host` header doesn't match its configured URL
+- The bridge spoofs the `Host` and `X-Forwarded-Proto` headers to communicate directly with Ghost over the internal Docker network
+- External redirects (magic links, logout) must use the public URL
 
 ### Nginx Configuration
 
@@ -235,6 +251,26 @@ server {
 
 ## How It Works
 
+### Ghost API Communication
+
+Ghost validates incoming requests against its configured `url` setting. When accessing Ghost from inside a Docker network (e.g., `http://ghost:2368`), Ghost will redirect to its public URL because the `Host` header doesn't match.
+
+The bridge solves this by spoofing HTTP headers:
+
+```
+Bridge Request:
+  URL: http://ghost-server:2368/ghost/api/admin/members/
+  Headers:
+    Host: blog.example.com              ← Matches Ghost's configured URL
+    X-Forwarded-Proto: https            ← Tells Ghost "this is HTTPS"
+    X-Forwarded-Host: blog.example.com  ← Reinforces the hostname
+    Authorization: Ghost <JWT>          ← Admin API authentication
+
+Ghost Response:
+  200 OK (no redirect!)
+  {"members": [...]}
+```
+
 ### Member Provisioning
 
 When a user logs in via the Member realm:
@@ -261,6 +297,7 @@ When a staff user logs in:
 - **Session Isolation**: Admin cookies scoped to `/ghost` path only
 - **Token Validation**: Ghost validates magic tokens and JWT signatures server-side
 - **Rootless Container**: Application runs as unprivileged `node` user (UID 1000)
+- **API Authentication**: Ghost Admin API calls use short-lived JWTs (5 min expiry)
 
 ---
 
@@ -298,6 +335,15 @@ docker build -t ghost-keycloak-bridge:local .
 
 Ensure Nginx sends `X-Forwarded-Proto $scheme`. The bridge needs to detect HTTPS for OIDC redirect URI validation.
 
+### Ghost API Returns HTML Instead of JSON
+
+This happens when Ghost redirects instead of responding. The bridge handles this by spoofing headers:
+- `Host`: matches Ghost's configured URL
+- `X-Forwarded-Proto: https`: tells Ghost the connection is secure
+- `X-Forwarded-Host`: reinforces the hostname
+
+If you still see this error, verify `GHOST_INTERNAL_URL` points to the correct Docker container and port.
+
 ### User Redirected But Not Logged In
 
 Check cookie domain configuration. The `BLOG_PUBLIC_URL` must match the domain where cookies are set.
@@ -309,6 +355,36 @@ The email from Keycloak must match an existing user in Ghost's `users` table wit
 ### Admin Session Not Persisting
 
 Verify the `admin_session_secret` exists in Ghost's `settings` table. Fresh Ghost installations may require initial setup.
+
+### Ghost Redirects to Keycloak on API Calls
+
+If using Nginx to protect `/ghost/` with SSO, ensure you exclude the API path:
+
+```nginx
+# Ghost Admin API - No auth redirect (JWT protected)
+location /ghost/api/ {
+    proxy_pass http://127.0.0.1:2368;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header Host $http_host;
+}
+
+# Ghost Admin Panel - Requires SSO cookie (AFTER /ghost/api/)
+location /ghost/ {
+    if ($http_cookie !~* "ghost-admin-api-session") {
+        return 302 https://$host/auth/admin/login;
+    }
+    # ... proxy config
+}
+```
+
+### "invalid_grant (Code not valid)" Error
+
+This is normal user behavior, not a bug. It occurs when:
+- User refreshes the callback page (OIDC codes are single-use)
+- Code expired (typically 30 seconds lifetime)
+- Browser back button after login
 
 ---
 
