@@ -12,18 +12,44 @@ A seamless **SSO (Single Sign-On)** integration between **Keycloak** and self-ho
 
 Unlike standard proxies, this bridge creates native Ghost sessions using "Cookie Forgery", allowing users to log in via Keycloak and be recognized as fully authenticated members in Ghost (allowing access to premium content, comments, and newsletters).
 
+---
+
 ## Features
 
-- **True SSO Experience** - Users log in via Keycloak and land on Ghost fully authenticated.
-- **Auto-Provisioning** - Automatically creates Ghost members upon first login.
-- **Self-Healing Sync** - Uses immutable Keycloak IDs (`sub`) to track users. If a user changes their email in Keycloak, it updates in Ghost automatically without creating duplicates.
-- **Native Session Support** - Generates valid `ghost-members-ssr` cookies signed with Ghost's RSA key.
-- **Secure & Rootless** - Docker container runs as non-root user (Node 22 Alpine).
-- **Lightweight** - <50MB Docker image.
+- **True SSO Experience**: Users log in via Keycloak and land on Ghost fully authenticated.
+- **Dual Realm Support**: Separate Keycloak realms for Members (subscribers) and Staff (admins).
+- **Auto-Provisioning**: Automatically creates Ghost members upon first login.
+- **Self-Healing Sync**: Uses Keycloak email as the source of truth for user identification.
+- **Native Session Support**: Generates valid `ghost-members-ssr` and `ghost-admin-api-session` cookies.
+- **Secure & Rootless**: Docker container runs as non-root user (Node 22 Alpine).
+- **Lightweight**: ~50MB Docker image footprint.
+
+---
+
+## Project Structure
+
+```
+ghost-keycloak-bridge/
+├── Dockerfile                  # Multi-stage build for production
+├── package.json
+├── README.md
+└── src/
+    ├── server.js               # Main entry point (Express + OIDC discovery)
+    ├── lib/
+    │   ├── db.js               # MySQL connection pool and query utilities
+    │   └── utils.js            # Cryptographic helpers (IDs, tokens, signatures)
+    └── routes/
+        ├── members.js          # Member SSO routes (/auth/member/*)
+        └── staff.js            # Staff SSO routes (/auth/admin/*)
+```
+
+---
 
 ## Architecture
 
 This bridge works by "spoofing" the Ghost authentication process. Since both services share the same root domain, the bridge can set a secure cookie that Ghost accepts.
+
+### Member Authentication Flow
 
 ```mermaid
 sequenceDiagram
@@ -35,120 +61,208 @@ sequenceDiagram
     participant Ghost
 
     User->>Browser: Click "Login"
-    Browser->>Nginx: GET /auth/login
+    Browser->>Nginx: GET /auth/member/login
     Nginx->>Bridge: Proxy Request
     Bridge->>Keycloak: Redirect to OIDC Auth
     Keycloak-->>User: Auth Prompt
     User->>Keycloak: Credentials
-    Keycloak->>Browser: Redirect to /auth/callback?code=...
+    Keycloak->>Browser: Redirect to /auth/member/callback?code=...
     Browser->>Bridge: GET /callback (with code)
     Bridge->>Ghost: Admin API: Find/Create Member
-    Bridge->>Bridge: Sign JWT (RS256) with Ghost Private Key
-    Bridge->>Browser: Set Cookie: ghost-members-ssr
-    Bridge->>Browser: Redirect to Blog Home
-    Browser->>Ghost: GET / (with Cookie)
-    Ghost-->>User: "Welcome back, Member!"
+    Bridge->>Ghost DB: Insert magic token
+    Bridge->>Browser: Redirect to /members/?token=...
+    Ghost-->>User: Session established
 ```
+
+### Staff Authentication Flow
+
+```mermaid
+sequenceDiagram
+    participant Staff
+    participant Browser
+    participant Bridge
+    participant Keycloak
+    participant GhostDB
+
+    Staff->>Browser: Access /auth/admin/login
+    Bridge->>Keycloak: OIDC Authorization
+    Keycloak-->>Staff: Credentials prompt
+    Staff->>Keycloak: Authenticate
+    Keycloak->>Bridge: Callback with code
+    Bridge->>GhostDB: Verify user exists
+    Bridge->>GhostDB: Create session record
+    Bridge->>Browser: Set ghost-admin-api-session cookie
+    Browser->>Ghost: Access /ghost/ (with cookie)
+    Ghost-->>Staff: Admin panel access granted
+```
+
+---
 
 ## Quick Start
 
 ### Prerequisites
 
-- **Ghost (Self-hosted)**: Admin access to the database.
-- **Keycloak**: A realm and a client configured.
-- **Domain**: Ghost and this Bridge must share the same root domain (e.g., `blog.example.com` and `blog.example.com/auth/`).
+- **Ghost (Self-hosted)**: v5.0+ with MySQL/MariaDB database access.
+- **Keycloak**: Two realms configured (Members + Staff) with OIDC clients.
+- **Domain**: Ghost and this Bridge must share the same root domain.
 
 ### Installation via Docker Compose
 
 Add the bridge service to your existing stack:
 
 ```yaml
-version: '3'
+version: '3.8'
+
 services:
   ghost-bridge:
     image: ghcr.io/astocanthus/ghost-keycloak-bridge:latest
     container_name: ghost-bridge
     restart: always
     environment:
+      # Server
       - PORT=3000
       - BLOG_PUBLIC_URL=https://blog.example.com
-      - COOKIE_DOMAIN=.example.com
-      - GHOST_INTERNAL_URL=http://ghost:2368
-      - KEYCLOAK_ISSUER=https://auth.example.com/realms/myrealm
-      - KEYCLOAK_ID=ghost-bridge
-      - KEYCLOAK_SECRET=your_client_secret
-      - CALLBACK_URL=https://blog.example.com/auth/callback
-      - GHOST_ADMIN_API_KEY=your_admin_api_key
-      - GHOST_PRIVATE_KEY=${GHOST_PRIVATE_KEY}
+      
+      # Database (Ghost MySQL)
+      - DB_HOST=ghost-db
+      - DB_USER=ghost
+      - DB_PASSWORD=${GHOST_DB_PASSWORD}
+      - DB_NAME=ghost
+      
+      # Member Realm (Subscribers)
+      - MEMBER_KEYCLOAK_ISSUER=https://auth.example.com/realms/members
+      - MEMBER_CLIENT_ID=ghost-members
+      - MEMBER_CLIENT_SECRET=${MEMBER_CLIENT_SECRET}
+      - MEMBER_CALLBACK_URL=https://blog.example.com/auth/member/callback
+      
+      # Staff Realm (Admins)
+      - STAFF_KEYCLOAK_ISSUER=https://auth.example.com/realms/staff
+      - STAFF_CLIENT_ID=ghost-admin
+      - STAFF_CLIENT_SECRET=${STAFF_CLIENT_SECRET}
+      - STAFF_CALLBACK_URL=https://blog.example.com/auth/admin/callback
+      
+      # Ghost Admin API
+      - GHOST_ADMIN_API_KEY=${GHOST_ADMIN_API_KEY}
     depends_on:
       - ghost
+      - ghost-db
+    networks:
+      - ghost-network
 ```
+
+---
 
 ## Configuration
 
-### 1. Extracting the Private Key (Crucial)
+### Environment Variables Reference
 
-Ghost uses an RSA key pair to sign member sessions. You must extract the Private Key from your Ghost database to allow the bridge to sign valid cookies.
+| Variable | Description | Required |
+|----------|-------------|----------|
+| `PORT` | Server listen port | No (default: 3000) |
+| `BLOG_PUBLIC_URL` | Public URL of your Ghost blog | Yes |
+| `DB_HOST` | Ghost database hostname | Yes |
+| `DB_USER` | Database username | Yes |
+| `DB_PASSWORD` | Database password | Yes |
+| `DB_NAME` | Database name | No (default: ghost) |
+| `DB_PORT` | Database port | No (default: 3306) |
+| `MEMBER_KEYCLOAK_ISSUER` | Member realm OIDC issuer URL | Yes |
+| `MEMBER_CLIENT_ID` | Member realm client ID | Yes |
+| `MEMBER_CLIENT_SECRET` | Member realm client secret | Yes |
+| `MEMBER_CALLBACK_URL` | Member callback URL | Yes |
+| `STAFF_KEYCLOAK_ISSUER` | Staff realm OIDC issuer URL | Yes |
+| `STAFF_CLIENT_ID` | Staff realm client ID | Yes |
+| `STAFF_CLIENT_SECRET` | Staff realm client secret | Yes |
+| `STAFF_CALLBACK_URL` | Staff callback URL | Yes |
+| `GHOST_ADMIN_API_KEY` | Ghost Admin API integration key | Yes |
 
-If using MySQL/MariaDB:
+### Nginx Configuration
 
-```sql
-SELECT value FROM settings WHERE key = 'members_private_key';
-```
-
-Copy the entire string including `-----BEGIN RSA PRIVATE KEY-----`.
-
-### 2. Environment Variables
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `BLOG_PUBLIC_URL` | Public URL of your blog | `https://blog.example.com` |
-| `COOKIE_DOMAIN` | Root domain for cookie sharing (Must start with dot) | `.example.com` |
-| `CALLBACK_URL` | Where Keycloak redirects back | `https://blog.example.com/auth/callback` |
-| `GHOST_INTERNAL_URL` | Docker network URL to reach Ghost | `http://ghost:2368` |
-| `GHOST_ADMIN_API_KEY` | Integration Admin Key | `65a...:82b...` |
-| `GHOST_PRIVATE_KEY` | The RSA key found in DB | `-----BEGIN...` |
-
-### 3. Nginx Configuration
-
-You need to map the `/auth/` path to this container.
+Map authentication paths to the bridge container:
 
 ```nginx
 server {
     server_name blog.example.com;
 
-    # Bridge for Authentication
-    location /auth/ {
-        proxy_pass http://ghost-bridge:3000/;
+    # Bridge for Member Authentication
+    location /auth/member/ {
+        proxy_pass http://ghost-bridge:3000/auth/member/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-Proto $scheme; # Important for OIDC
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    # Bridge for Staff Authentication  
+    location /auth/admin/ {
+        proxy_pass http://ghost-bridge:3000/auth/admin/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
 
     # Ghost Blog
     location / {
         proxy_pass http://ghost:2368;
-        # ... standard ghost headers
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }
 ```
 
+---
+
+## API Endpoints
+
+### Member Routes (`/auth/member/`)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/auth/member/login` | GET | Initiates Keycloak login |
+| `/auth/member/login?action=signup` | GET | Redirects to Keycloak registration |
+| `/auth/member/logout` | GET | Clears cookies and triggers Keycloak SLO |
+| `/auth/member/callback` | GET | OIDC callback handler |
+
+### Staff Routes (`/auth/admin/`)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/auth/admin/login` | GET | Initiates staff Keycloak login |
+| `/auth/admin/callback` | GET | OIDC callback, creates admin session |
+
+---
+
 ## How It Works
 
-### User Synchronization
+### Member Provisioning
 
-Instead of relying on emails (which change), this bridge uses Ghost Labels to store the immutable Keycloak User ID.
+When a user logs in via the Member realm:
+1. Bridge extracts email from Keycloak ID token
+2. Queries Ghost Admin API for existing member
+3. Creates member if not found (auto-provisioning)
+4. Generates magic link token and inserts into Ghost `tokens` table
+5. Redirects user to Ghost's `/members/?token=...` endpoint
+6. Ghost validates token and establishes native session
 
-1. **Login**: Bridge extracts `sub` (UUID) from Keycloak token.
-2. **Lookup**: Checks Ghost for a member with label `kc-id-<UUID>`.
-3. **Sync**:
-   - If found: Updates email/name in Ghost if they changed in Keycloak.
-   - If not found: Creates a new member and assigns the label.
+### Staff Session Injection
 
-### Security
+When a staff user logs in:
+1. Bridge validates user exists in Ghost `users` table
+2. Retrieves `admin_session_secret` from Ghost settings
+3. Creates session record in Ghost `sessions` table
+4. Signs session ID using HMAC-SHA256
+5. Sets `ghost-admin-api-session` cookie with signature
+6. Redirects to `/ghost/` admin panel
 
-- **Cookie Scope**: Cookies are set with `HttpOnly` and `Secure` flags.
-- **Validation**: Ghost validates the JWT signature using its public key. Since we use the correct private key, Ghost accepts the session.
+### Security Considerations
+
+- **Cookie Scope**: All cookies use `HttpOnly`, `Secure`, and appropriate `SameSite` flags
+- **Session Isolation**: Admin cookies scoped to `/ghost` path only
+- **Token Validation**: Ghost validates magic tokens and JWT signatures server-side
+- **Rootless Container**: Application runs as unprivileged `node` user (UID 1000)
+
+---
 
 ## Development
 
@@ -162,27 +276,47 @@ cd ghost-keycloak-bridge
 # Install dependencies
 npm install
 
-# Create .env file based on example
+# Create .env file
 cp .env.example .env
+# Edit .env with your configuration
 
-# Run in dev mode
+# Run in development mode
 npm run dev
 ```
 
+### Building Docker Image
+
+```bash
+docker build -t ghost-keycloak-bridge:local .
+```
+
+---
+
 ## Troubleshooting
 
-**"Mismatching URL" error:**
-Ensure your Nginx config sends `X-Forwarded-Proto $scheme`. The bridge needs to know it's running behind HTTPS.
+### "Mismatching URL" Error
 
-**User is redirected but not logged in:**
-Check the `COOKIE_DOMAIN`. It must encompass the blog's domain. If your blog is `blog.site.com`, the domain should be `.site.com` or `.blog.site.com`.
+Ensure Nginx sends `X-Forwarded-Proto $scheme`. The bridge needs to detect HTTPS for OIDC redirect URI validation.
 
-**Ghost Private Key format:**
-Ensure newlines are preserved. In Docker Compose, you can pass the key as a single line string where newlines are replaced by `\n`.
+### User Redirected But Not Logged In
+
+Check cookie domain configuration. The `BLOG_PUBLIC_URL` must match the domain where cookies are set.
+
+### Staff Login Returns "user_not_found"
+
+The email from Keycloak must match an existing user in Ghost's `users` table with an active status.
+
+### Admin Session Not Persisting
+
+Verify the `admin_session_secret` exists in Ghost's `settings` table. Fresh Ghost installations may require initial setup.
+
+---
 
 ## License
 
 This project is open source and available under the [MIT License](https://opensource.org/licenses/MIT).
+
+---
 
 ## Author
 
@@ -191,7 +325,10 @@ This project is open source and available under the [MIT License](https://openso
 - GitHub: [@Astocanthus](https://github.com/Astocanthus)
 - LinkedIn: [Benjamin Romeo](https://www.linkedin.com/in/benjamin-romeo-1a533093/)
 
+---
+
 ## Acknowledgments
 
 - Built for [Ghost](https://ghost.org/)
-- Built for the [Low-layer Codermug](https://codermug.low-layer.com) Infrastructure.
+- Built for the [Low-layer Codermug](https://codermug.low-layer.com) Infrastructure
+- Powered by [Keycloak](https://www.keycloak.org/) OIDC
