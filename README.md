@@ -32,7 +32,14 @@ Unlike standard proxies, this bridge creates native Ghost sessions using "Cookie
 ghost-keycloak-bridge/
 ├── Dockerfile                  # Multi-stage build for production
 ├── package.json
+├── LICENSE
 ├── README.md
+├── CHANGELOG.md                # Version history
+├── API.md                      # API documentation
+├── docs/                       # Additional documentation
+├── ghost-sso/                  # Ghost Admin UI injection scripts
+│   └── 6.x/                    # Scripts for Ghost 6.x
+│       └── custom-start.sh     # Admin UI patcher
 └── src/
     ├── server.js               # Main entry point (Express + OIDC discovery)
     ├── lib/
@@ -42,6 +49,16 @@ ghost-keycloak-bridge/
         ├── members.js          # Member SSO routes (/auth/member/*)
         └── staff.js            # Staff SSO routes (/auth/admin/*)
 ```
+
+### Ghost SSO Version Support
+
+The `ghost-sso/` folder contains version-specific scripts for patching the Ghost Admin UI:
+
+| Folder | Ghost Version | Status |
+|--------|---------------|--------|
+| `6.x/` | Ghost 6.0+ | ✅ Supported |
+
+This structure allows maintaining separate patching logic as Ghost's admin UI evolves between major versions.
 
 ---
 
@@ -239,6 +256,7 @@ server {
 | `/auth/member/login?action=signup` | GET | Redirects to Keycloak registration |
 | `/auth/member/logout` | GET | Clears cookies and triggers Keycloak SLO |
 | `/auth/member/callback` | GET | OIDC callback handler |
+| `/auth/member/debug` | GET | Returns JSON diagnostic info (API connectivity test) |
 
 ### Staff Routes (`/auth/admin/`)
 
@@ -325,6 +343,88 @@ npm run dev
 
 ```bash
 docker build -t ghost-keycloak-bridge:local .
+```
+
+---
+
+## Admin UI Injection (Optional)
+
+The bridge includes an optional script that adds a "Login with OIDC (Staff)" button directly on the Ghost Admin login page.
+
+### How It Works
+
+The `ghost-sso/6.x/custom-start.sh` script:
+1. Runs at Ghost container startup (as entrypoint)
+2. Locates the Ghost Admin `index.html` file
+3. Injects a client-side script that renders the SSO button
+4. Launches the Ghost process
+
+### Docker Compose Deployment
+
+Mount the script and override the Ghost entrypoint:
+
+```yaml
+services:
+  ghost:
+    image: ghost:5-alpine
+    volumes:
+      - ghost-content:/var/lib/ghost/content
+      - ./ghost-sso/6.x/custom-start.sh:/var/lib/ghost/custom-start.js:ro
+    command: ["node", "/var/lib/ghost/custom-start.js"]
+    environment:
+      url: https://blog.example.com
+      # ... other Ghost config
+```
+
+### Kubernetes Deployment
+
+Create a ConfigMap containing the script:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ghost-sso-patcher
+data:
+  custom-start.js: |
+    #!/usr/bin/env node
+    // ... (paste content from ghost-sso/6.x/custom-start.sh)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ghost
+spec:
+  template:
+    spec:
+      containers:
+        - name: ghost
+          image: ghost:5-alpine
+          command: ["node", "/scripts/custom-start.js"]
+          volumeMounts:
+            - name: sso-script
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: sso-script
+          configMap:
+            name: ghost-sso-patcher
+```
+
+### Result
+
+After deployment, the Ghost Admin login page displays:
+
+```
+┌─────────────────────────────────────┐
+│         Ghost Admin Login           │
+├─────────────────────────────────────┤
+│  Email: [________________]          │
+│  Password: [________________]       │
+│                                     │
+│  [ Sign in ]                        │
+│  [ Login with OIDC (Staff) ]  ← NEW │
+└─────────────────────────────────────┘
 ```
 
 ---
