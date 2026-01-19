@@ -27,6 +27,7 @@ import { discovery } from 'openid-client';
 import memberRoutes from './routes/members.js';
 import staffRoutes from './routes/staff.js';
 import { createLogger } from './lib/logger.js';
+import healthRouter, { setStartupComplete } from './routes/health.js';
 
 const log = createLogger('server');
 
@@ -40,6 +41,7 @@ const PORT = process.env.PORT || 3000;
 
 app.enable('trust proxy');
 app.use(cookieParser());
+app.use(healthRouter);
 
 // ---------------------------------------------------------------------------
 // OIDC CLIENT INITIALIZATION
@@ -82,6 +84,7 @@ async function start() {
 
     app.use('/auth/member', memberRoutes(memberConfig));
     app.use('/auth/admin', staffRoutes(staffConfig));
+    setStartupComplete();
     log.debug('Routes mounted', { paths: ['/auth/member', '/auth/admin'] });
 
     // ---------------------------------------------------------------------------
