@@ -1,3 +1,5 @@
+
+
 # Ghost Keycloak Bridge
 
 [![Node.js](https://img.shields.io/badge/Node.js-22.x-339933?style=for-the-badge&logo=nodedotjs&logoColor=white)](https://nodejs.org/)
@@ -44,6 +46,7 @@ ghost-keycloak-bridge/
     ├── server.js               # Main entry point (Express + OIDC discovery)
     ├── lib/
     │   ├── db.js               # MySQL connection pool and query utilities
+    │   ├── logger.js           # Centralized Winston logging
     │   └── utils.js            # Cryptographic helpers (IDs, tokens, signatures)
     └── routes/
         ├── members.js          # Member SSO routes (/auth/member/*)
@@ -177,6 +180,8 @@ services:
 | Variable | Description | Required |
 |----------|-------------|----------|
 | `PORT` | Server listen port | No (default: 3000) |
+| `LOG_LEVEL` | Logging verbosity (error, warn, info, http, debug) | No (default: info in prod, debug in dev) |
+| `NODE_ENV` | Environment mode (production, development) | No (default: development) |
 | `BLOG_PUBLIC_URL` | Public URL of your Ghost blog (for browser redirects) | Yes |
 | `GHOST_INTERNAL_URL` | Internal Docker URL for Ghost API calls | Yes |
 | `DB_HOST` | Ghost database hostname | Yes |
@@ -193,6 +198,38 @@ services:
 | `STAFF_CLIENT_SECRET` | Staff realm client secret | Yes |
 | `STAFF_CALLBACK_URL` | Staff callback URL | Yes |
 | `GHOST_ADMIN_API_KEY` | Ghost Admin API integration key | Yes |
+
+### Logging Configuration
+
+The bridge uses structured logging with configurable verbosity levels:
+
+| Level | Description | Use Case |
+|-------|-------------|----------|
+| `error` | Critical failures | Production alerts |
+| `warn` | Warning conditions | Degraded functionality |
+| `info` | Operational info | Standard production logging |
+| `http` | HTTP requests/responses | API debugging |
+| `debug` | Detailed diagnostics | Development debugging |
+
+**Production (JSON format):**
+```bash
+LOG_LEVEL=info NODE_ENV=production node src/server.js
+```
+
+**Development (colored output):**
+```bash
+LOG_LEVEL=debug node src/server.js
+```
+
+**Example log output (production):**
+```json
+{"level":"info","message":"Staff login successful, redirecting to admin","module":"staff","email":"admin@example.com","timestamp":"2026-01-18 10:30:45.123"}
+```
+
+**Example log output (development):**
+```
+10:30:45.123 info [staff] Staff login successful, redirecting to admin {"email":"admin@example.com"}
+```
 
 ### URL Configuration
 
