@@ -6,14 +6,18 @@
     *   [Parameters][2]
 *   [fetchGhostSecret][3]
 *   [isStaffEmpty][4]
-*   [generateObjectId][5]
-*   [generateUUID][6]
-*   [generateMagicToken][7]
-*   [signGhostCookie][8]
-    *   [Parameters][9]
-*   [generateGhostSessionId][10]
-*   [signCookie][11]
-    *   [Parameters][12]
+*   [testConnection][5]
+*   [createLogger][6]
+    *   [Parameters][7]
+    *   [Examples][8]
+*   [generateObjectId][9]
+*   [generateUUID][10]
+*   [generateMagicToken][11]
+*   [signGhostCookie][12]
+    *   [Parameters][13]
+*   [generateSessionId][14]
+*   [signCookie][15]
+    *   [Parameters][16]
 
 ## query
 
@@ -21,44 +25,68 @@ Executes a parameterized SQL query against the Ghost database.
 
 ### Parameters
 
-*   `sql` **[string][13]** SQL statement with ? placeholders
-*   `params` **[Array][14]** Values to bind to placeholders
+*   `sql` **[string][17]** SQL statement with ? placeholders
+*   `params` **[Array][18]** Values to bind to placeholders (optional, default `[]`)
 
-Returns **[Promise][15]<[Array][14]>** Query results
+Returns **[Promise][19]<[Array][18]>** Query results
 
 ## fetchGhostSecret
 
 Retrieves the Ghost database hash used for internal signatures.
 
-Returns **[Promise][15]<([string][13] | null)>** The db\_hash value or null if not found
+Returns **[Promise][19]<([string][17] | null)>** The db\_hash value or null if not found
 
 ## isStaffEmpty
 
 Checks if the Ghost instance has any active staff users.
 Used to detect fresh installations requiring setup.
 
-Returns **[Promise][15]<[boolean][16]>** True if no active staff exists
+Returns **[Promise][19]<[boolean][20]>** True if no active staff exists
+
+## testConnection
+
+Tests database connectivity.
+
+Returns **[Promise][19]<[boolean][20]>** True if connection successful
+
+## createLogger
+
+Creates a child logger with module context.
+
+### Parameters
+
+*   `moduleName` **[string][17]** Name of the module (e.g., 'members', 'staff', 'db')
+
+### Examples
+
+```javascript
+const log = createLogger('members');
+log.info('User authenticated', { email: 'user@example.com' });
+// Output: 10:30:45.123 info [members] User authenticated {"email":"user@example.com"}
+```
+
+Returns **winston.Logger** Child logger instance
 
 ## generateObjectId
 
 Generates a 24-character hexadecimal ID for Ghost database records.
 Mirrors MongoDB ObjectId format used by Ghost's data layer.
 
-Returns **[string][13]** 24-char hex string
+Returns **[string][17]** 24-char hex string
 
 ## generateUUID
 
 Generates a RFC 4122 compliant UUID v4.
 Used for member UUID fields and external references.
 
-Returns **[string][13]** UUID string (e.g., "550e8400-e29b-41d4-a716-446655440000")
+Returns **[string][17]** UUID string (e.g., "550e8400-e29b-41d4-a716-446655440000")
 
 ## generateMagicToken
 
 Generates a URL-safe base64 token for magic link authentication.
 Replaces +/= with URL-safe characters for query string compatibility.
 
-Returns **[string][13]** 32-char URL-safe token
+Returns **[string][17]** 32-char URL-safe token
 
 ## signGhostCookie
 
@@ -67,16 +95,16 @@ Produces cookies in the format: s:<sessionId>.<signature>
 
 ### Parameters
 
-*   `sessionId` **[string][13]** The session identifier to sign
-*   `secret` **[string][13]** The Ghost admin\_session\_secret
+*   `sessionId` **[string][17]** The session identifier to sign
+*   `secret` **[string][17]** The Ghost admin\_session\_secret
 
-Returns **[string][13]** Signed cookie value prefixed with 's:'
+Returns **[string][17]** Signed cookie value prefixed with 's:'
 
-## generateGhostSessionId
+## generateSessionId
 
-Generates a 32-character URL-safe session ID.
+Generates a 32-character URL-safe session ID for Ghost admin sessions.
 
-Returns **[string][13]** Base64 URL-safe session identifier
+Returns **[string][17]** Base64 URL-safe session identifier
 
 ## signCookie
 
@@ -85,10 +113,10 @@ Format: s:<value>.<base64-signature>
 
 ### Parameters
 
-*   `val` **[string][13]** Value to sign
-*   `secret` **[string][13]** Ghost admin\_session\_secret
+*   `val` **[string][17]** Value to sign
+*   `secret` **[string][17]** Ghost admin\_session\_secret
 
-Returns **[string][13]** Signed cookie string
+Returns **[string][17]** Signed cookie string
 
 [1]: #query
 
@@ -98,26 +126,34 @@ Returns **[string][13]** Signed cookie string
 
 [4]: #isstaffempty
 
-[5]: #generateobjectid
+[5]: #testconnection
 
-[6]: #generateuuid
+[6]: #createlogger
 
-[7]: #generatemagictoken
+[7]: #parameters-1
 
-[8]: #signghostcookie
+[8]: #examples
 
-[9]: #parameters-1
+[9]: #generateobjectid
 
-[10]: #generateghostsessionid
+[10]: #generateuuid
 
-[11]: #signcookie
+[11]: #generatemagictoken
 
-[12]: #parameters-2
+[12]: #signghostcookie
 
-[13]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/String
+[13]: #parameters-2
 
-[14]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Array
+[14]: #generatesessionid
 
-[15]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Promise
+[15]: #signcookie
 
-[16]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Boolean
+[16]: #parameters-3
+
+[17]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/String
+
+[18]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Array
+
+[19]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Promise
+
+[20]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Boolean
