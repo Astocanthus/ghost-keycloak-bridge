@@ -39,6 +39,7 @@ const router = express.Router();
 // Returns 200 as long as the Node.js process is running.
 
 router.get('/health', (req, res) => {
+    log.debug('Liveness check called');
     res.status(200).json({
         status: 'ok',
         timestamp: new Date().toISOString(),
@@ -48,6 +49,7 @@ router.get('/health', (req, res) => {
 
 // Alias for /healthz (common Kubernetes convention)
 router.get('/healthz', (req, res) => {
+    log.debug('Liveness check called (alias)');
     res.status(200).json({
         status: 'ok',
         timestamp: new Date().toISOString(),
@@ -62,16 +64,15 @@ router.get('/healthz', (req, res) => {
 // Returns 200 only if all dependencies (database) are available.
 
 router.get('/ready', async (req, res) => {
-    const checks = {
-        database: false
-    };
+    log.debug('Readiness check called');
+    const checks = { database: false };
 
     try {
         // Check database connectivity
         checks.database = await testConnection();
 
         if (checks.database) {
-            log.debug('Readiness check passed');
+            log.debug('Readiness check passed', { checks });
             res.status(200).json({
                 status: 'ready',
                 timestamp: new Date().toISOString(),
@@ -99,20 +100,21 @@ router.get('/ready', async (req, res) => {
 
 // Alias for /readyz (common Kubernetes convention)
 router.get('/readyz', async (req, res) => {
-    const checks = {
-        database: false
-    };
+    log.debug('Readiness check called (alias)');
+    const checks = { database: false };
 
     try {
         checks.database = await testConnection();
 
         if (checks.database) {
+            log.debug('Readiness check passed', { checks });
             res.status(200).json({
                 status: 'ready',
                 timestamp: new Date().toISOString(),
                 checks
             });
         } else {
+            log.warn('Readiness check failed: database unavailable');
             res.status(503).json({
                 status: 'not ready',
                 timestamp: new Date().toISOString(),
@@ -121,6 +123,7 @@ router.get('/readyz', async (req, res) => {
             });
         }
     } catch (err) {
+        log.error('Readiness check error', { error: err.message });
         res.status(503).json({
             status: 'not ready',
             timestamp: new Date().toISOString(),
@@ -144,6 +147,8 @@ export const setStartupComplete = () => {
 };
 
 router.get('/startup', (req, res) => {
+    log.debug('Startup check called', { isComplete: isStartupComplete });
+    
     if (isStartupComplete) {
         res.status(200).json({
             status: 'started',
