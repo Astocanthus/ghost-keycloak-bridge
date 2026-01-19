@@ -88,14 +88,6 @@ async function start() {
     log.debug('Routes mounted', { paths: ['/auth/member', '/auth/admin'] });
 
     // ---------------------------------------------------------------------------
-    // HEALTH CHECK ENDPOINT
-    // ---------------------------------------------------------------------------
-
-    app.get('/health', (req, res) => {
-      res.json({ status: 'ok', timestamp: new Date().toISOString() });
-    });
-
-    // ---------------------------------------------------------------------------
     // SERVER START
     // ---------------------------------------------------------------------------
     // Binds to configured port after successful OIDC discovery.
