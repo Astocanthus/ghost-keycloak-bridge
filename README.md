@@ -1,5 +1,3 @@
-
-
 # Ghost Keycloak Bridge
 
 [![Node.js](https://img.shields.io/badge/Node.js-22.x-339933?style=for-the-badge&logo=nodedotjs&logoColor=white)](https://nodejs.org/)
@@ -8,6 +6,8 @@
 [![Ghost](https://img.shields.io/badge/Ghost-%3E%3D5.0.0-738A94?style=for-the-badge&logo=ghost&logoColor=white)](https://ghost.org/)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Tests](https://img.shields.io/badge/Tests-102%20passed-success)](./tests/)
+[![Coverage](https://img.shields.io/badge/Coverage-84%25-green)](./tests/)
 [![GitHub issues](https://img.shields.io/github/issues/Astocanthus/ghost-keycloak-bridge.svg)](https://github.com/Astocanthus/ghost-keycloak-bridge/issues)
 
 A seamless **SSO (Single Sign-On)** integration between **Keycloak** and self-hosted **Ghost** blogs.
@@ -23,6 +23,8 @@ Unlike standard proxies, this bridge creates native Ghost sessions using "Cookie
 - **Auto-Provisioning**: Automatically creates Ghost members upon first login.
 - **Self-Healing Sync**: Uses Keycloak email as the source of truth for user identification.
 - **Native Session Support**: Generates valid `ghost-members-ssr` and `ghost-admin-api-session` cookies.
+- **Health Check Endpoints**: Kubernetes/Podman ready with `/health`, `/ready`, `/startup` probes.
+- **Structured Logging**: Winston-based logging with configurable levels and JSON output.
 - **Secure & Rootless**: Docker container runs as non-root user (Node 22 Alpine).
 - **Lightweight**: ~50MB Docker image footprint.
 
@@ -34,6 +36,7 @@ Unlike standard proxies, this bridge creates native Ghost sessions using "Cookie
 ghost-keycloak-bridge/
 ├── Dockerfile                  # Multi-stage build for production
 ├── package.json
+├── jest.config.js              # Jest test configuration
 ├── LICENSE
 ├── README.md
 ├── CHANGELOG.md                # Version history
@@ -42,15 +45,26 @@ ghost-keycloak-bridge/
 ├── ghost-sso/                  # Ghost Admin UI injection scripts
 │   └── 6.x/                    # Scripts for Ghost 6.x
 │       └── custom-start.sh     # Admin UI patcher
-└── src/
-    ├── server.js               # Main entry point (Express + OIDC discovery)
-    ├── lib/
-    │   ├── db.js               # MySQL connection pool and query utilities
-    │   ├── logger.js           # Centralized Winston logging
-    │   └── utils.js            # Cryptographic helpers (IDs, tokens, signatures)
-    └── routes/
-        ├── members.js          # Member SSO routes (/auth/member/*)
-        └── staff.js            # Staff SSO routes (/auth/admin/*)
+├── src/
+│   ├── server.js               # Main entry point (Express + OIDC discovery)
+│   ├── lib/
+│   │   ├── db.js               # MySQL connection pool and query utilities
+│   │   ├── logger.js           # Centralized Winston logging
+│   │   └── utils.js            # Cryptographic helpers (IDs, tokens, signatures)
+│   └── routes/
+│       ├── health.js           # Health check endpoints (/health, /ready, /startup)
+│       ├── members.js          # Member SSO routes (/auth/member/*)
+│       └── staff.js            # Staff SSO routes (/auth/admin/*)
+└── tests/                      # Jest test suite
+    ├── setup.js                # Test environment configuration
+    ├── mocks/
+    │   └── logger.mock.js      # Logger mock for unit tests
+    └── unit/
+        ├── utils.test.js       # Cryptographic utilities tests
+        ├── db.test.js          # Database operations tests
+        ├── logger.test.js      # Logging module tests
+        ├── routes.test.js      # Express routes tests
+        └── health.test.js      # Health check tests
 ```
 
 ### Ghost SSO Version Support
@@ -135,12 +149,14 @@ version: '3.8'
 
 services:
   ghost-bridge:
-    image: ghcr.io/astocanthus/ghost-keycloak-bridge:latest
+    image: ghcr.io/astocanthus/ghost-keycloak-bridge:1.1.0
     container_name: ghost-bridge
     restart: always
     environment:
       # Server
       - PORT=3000
+      - LOG_LEVEL=info
+      - NODE_ENV=production
       - BLOG_PUBLIC_URL=https://blog.example.com
       - GHOST_INTERNAL_URL=http://ghost:2368
       
@@ -169,6 +185,11 @@ services:
       - ghost-db
     networks:
       - ghost-network
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 ```
 
 ---
@@ -177,27 +198,27 @@ services:
 
 ### Environment Variables Reference
 
-| Variable | Description | Required |
-|----------|-------------|----------|
-| `PORT` | Server listen port | No (default: 3000) |
-| `LOG_LEVEL` | Logging verbosity (error, warn, info, http, debug) | No (default: info in prod, debug in dev) |
-| `NODE_ENV` | Environment mode (production, development) | No (default: development) |
-| `BLOG_PUBLIC_URL` | Public URL of your Ghost blog (for browser redirects) | Yes |
-| `GHOST_INTERNAL_URL` | Internal Docker URL for Ghost API calls | Yes |
-| `DB_HOST` | Ghost database hostname | Yes |
-| `DB_USER` | Database username | Yes |
-| `DB_PASSWORD` | Database password | Yes |
-| `DB_NAME` | Database name | No (default: ghost) |
-| `DB_PORT` | Database port | No (default: 3306) |
-| `MEMBER_KEYCLOAK_ISSUER` | Member realm OIDC issuer URL | Yes |
-| `MEMBER_CLIENT_ID` | Member realm client ID | Yes |
-| `MEMBER_CLIENT_SECRET` | Member realm client secret | Yes |
-| `MEMBER_CALLBACK_URL` | Member callback URL | Yes |
-| `STAFF_KEYCLOAK_ISSUER` | Staff realm OIDC issuer URL | Yes |
-| `STAFF_CLIENT_ID` | Staff realm client ID | Yes |
-| `STAFF_CLIENT_SECRET` | Staff realm client secret | Yes |
-| `STAFF_CALLBACK_URL` | Staff callback URL | Yes |
-| `GHOST_ADMIN_API_KEY` | Ghost Admin API integration key | Yes |
+| Variable | Description | Required | Default |
+|----------|-------------|----------|---------|
+| `PORT` | Server listen port | No | 3000 |
+| `LOG_LEVEL` | Logging verbosity (error, warn, info, http, debug) | No | info (prod) / debug (dev) |
+| `NODE_ENV` | Environment mode (production, development) | No | development |
+| `BLOG_PUBLIC_URL` | Public URL of your Ghost blog (for browser redirects) | Yes | — |
+| `GHOST_INTERNAL_URL` | Internal Docker URL for Ghost API calls | Yes | — |
+| `DB_HOST` | Ghost database hostname | Yes | — |
+| `DB_USER` | Database username | Yes | — |
+| `DB_PASSWORD` | Database password | Yes | — |
+| `DB_NAME` | Database name | No | ghost |
+| `DB_PORT` | Database port | No | 3306 |
+| `MEMBER_KEYCLOAK_ISSUER` | Member realm OIDC issuer URL | Yes | — |
+| `MEMBER_CLIENT_ID` | Member realm client ID | Yes | — |
+| `MEMBER_CLIENT_SECRET` | Member realm client secret | Yes | — |
+| `MEMBER_CALLBACK_URL` | Member callback URL | Yes | — |
+| `STAFF_KEYCLOAK_ISSUER` | Staff realm OIDC issuer URL | Yes | — |
+| `STAFF_CLIENT_ID` | Staff realm client ID | Yes | — |
+| `STAFF_CLIENT_SECRET` | Staff realm client secret | Yes | — |
+| `STAFF_CALLBACK_URL` | Staff callback URL | Yes | — |
+| `GHOST_ADMIN_API_KEY` | Ghost Admin API integration key | Yes | — |
 
 ### Logging Configuration
 
@@ -283,7 +304,76 @@ server {
 
 ---
 
+## Health Check Endpoints
+
+The bridge exposes Kubernetes/Podman-compatible health check endpoints:
+
+| Endpoint | Type | Status Codes | Description |
+|----------|------|--------------|-------------|
+| `/health` | Liveness | 200 | Process is running |
+| `/healthz` | Liveness (alias) | 200 | Same as `/health` |
+| `/ready` | Readiness | 200 / 503 | Database connection healthy |
+| `/readyz` | Readiness (alias) | 200 / 503 | Same as `/ready` |
+| `/startup` | Startup | 200 / 503 | Initialization complete |
+
+### Response Format
+
+```json
+{
+  "status": "ready",
+  "timestamp": "2026-01-19T10:30:45.123Z",
+  "checks": {
+    "database": true
+  }
+}
+```
+
+### Kubernetes Probe Configuration
+
+```yaml
+spec:
+  containers:
+    - name: ghost-bridge
+      image: ghcr.io/astocanthus/ghost-keycloak-bridge:1.1.0
+      ports:
+        - containerPort: 3000
+      livenessProbe:
+        httpGet:
+          path: /health
+          port: 3000
+        initialDelaySeconds: 5
+        periodSeconds: 10
+        timeoutSeconds: 5
+        failureThreshold: 3
+      readinessProbe:
+        httpGet:
+          path: /ready
+          port: 3000
+        initialDelaySeconds: 10
+        periodSeconds: 5
+        timeoutSeconds: 5
+        failureThreshold: 3
+      startupProbe:
+        httpGet:
+          path: /startup
+          port: 3000
+        failureThreshold: 30
+        periodSeconds: 2
+```
+
+---
+
 ## API Endpoints
+
+### Health Routes (`/`)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Liveness probe |
+| `/healthz` | GET | Liveness probe (alias) |
+| `/ready` | GET | Readiness probe |
+| `/readyz` | GET | Readiness probe (alias) |
+| `/startup` | GET | Startup probe |
 
 ### Member Routes (`/auth/member/`)
 
@@ -368,13 +458,39 @@ cd ghost-keycloak-bridge
 # Install dependencies
 npm install
 
-# Create .env file
-cp .env.example .env
-# Edit .env with your configuration
-
 # Run in development mode
 npm run dev
 ```
+
+### Running Tests
+
+The project includes a comprehensive Jest test suite:
+
+```bash
+# Run all tests
+npm test
+
+# Watch mode (re-run on changes)
+npm run test:watch
+
+# Generate coverage report
+npm run test:coverage
+
+# CI mode with JUnit reporter
+npm run test:ci
+```
+
+### Test Coverage
+
+| Module | Statements | Branches | Functions |
+|--------|------------|----------|-----------|
+| `utils.js` | 100% | 100% | 100% |
+| `db.js` | 100% | 69% | 100% |
+| `logger.js` | 100% | 91% | 100% |
+| `routes/members.js` | 85% | 63% | 100% |
+| `routes/staff.js` | 97% | 78% | 100% |
+| `routes/health.js` | 100% | 100% | 100% |
+| **Total** | **84%** | **70%** | **89%** |
 
 ### Building Docker Image
 
@@ -522,6 +638,15 @@ This is normal user behavior, not a bug. It occurs when:
 - User refreshes the callback page (OIDC codes are single-use)
 - Code expired (typically 30 seconds lifetime)
 - Browser back button after login
+
+### Readiness Probe Failing
+
+Check database connectivity:
+```bash
+curl http://localhost:3000/ready
+```
+
+If `database: false`, verify `DB_HOST`, `DB_USER`, `DB_PASSWORD` environment variables.
 
 ---
 
