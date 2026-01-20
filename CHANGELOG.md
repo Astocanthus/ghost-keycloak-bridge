@@ -7,20 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [1.1.0] - 2026-01-18
+## [1.1.0] - 2026-01-20
 
 ### Added
+
+- **Health Check Endpoints** (`src/routes/health.js`)
+  - `GET /health`, `/healthz` - Liveness probe (always 200 if process running)
+  - `GET /ready`, `/readyz` - Readiness probe (200 if database connected, 503 otherwise)
+  - `GET /startup` - Startup probe for slow-starting containers
+  - JSON responses with status, timestamp, and diagnostic info
+  - Kubernetes/Podman orchestration ready
+
+- **Centralized Logging System** (`src/lib/logger.js`)
+  - Winston-based structured logging
+  - Configurable log levels: error, warn, info, http, debug
+  - Environment-driven format switching:
+    - Production: JSON format for log aggregators (ELK, Loki, CloudWatch)
+    - Development: Colored human-readable output
+  - Module-specific loggers with automatic context injection
+  - `LOG_LEVEL` environment variable support
+
+- **Comprehensive Test Suite** (`tests/`)
+  - Jest testing framework with ES modules support
+  - 85+ unit and integration tests
+  - Coverage: 84% statements, 70% branches, 89% functions
+  - Test files:
+    - `utils.test.js` - Cryptographic utilities (26 tests)
+    - `db.test.js` - Database operations (22 tests)
+    - `logger.test.js` - Logging module (17 tests)
+    - `routes.test.js` - Express routes with mocked OIDC (20 tests)
+    - `health.test.js` - Health check endpoints (18 tests)
 
 - **Admin UI Injection Script** (`ghost-sso/6.x/custom-start.sh`)
   - Automatically patches Ghost Admin login page at container startup
   - Injects "Login with OIDC (Staff)" button directly on the login form
   - Uses MutationObserver for dynamic injection on SPA navigation
   - Idempotent: skips patching if button already exists
-  - Version-specific folder structure (`ghost-sso/6.x/`) for Ghost version compatibility
 
 - **Docker/Kubernetes Deployment Support**
   - Volume mount examples for Docker Compose
   - ConfigMap examples for Kubernetes deployments
+  - Liveness, Readiness, and Startup probe configurations
+
+### Changed
+
+- **openid-client Migration (v5 → v6)**
+  - Migrated from `Issuer.discover()` + `new Client()` to `discovery()` function
+  - Replaced `client.callback()` with `authorizationCodeGrant()`
+  - Replaced `client.authorizationUrl()` with `buildAuthorizationUrl()`
+  - Updated server metadata access via `oidcConfig.serverMetadata()`
+
+- **Project Structure**
+  - Health check router moved to `src/routes/health.js`
+  - Added `tests/` directory with Jest configuration
+  - Added `tests/mocks/` for test utilities
+
+### Developer Experience
+
+- `npm test` - Run all tests
+- `npm run test:watch` - Watch mode for development
+- `npm run test:coverage` - Generate coverage report
+- `npm run dev` - Development mode with debug logging
 
 ---
 
@@ -87,10 +134,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Planned
 
-- Unit tests for `src/lib/utils.js` and `src/lib/db.js`
-- Integration tests with mocked Ghost/Keycloak
-- Health check endpoint (`/health`)
 - Prometheus metrics endpoint (`/metrics`)
+- Rate limiting middleware
+- Ghost 6.x Admin UI injection script
 
 ---
 
