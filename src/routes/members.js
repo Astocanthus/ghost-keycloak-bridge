@@ -1,4 +1,4 @@
-// Author : Benjamin Romeo (Astocanthus)
+// Copyright (C) - LOW-LAYER
 // Contact : contact@low-layer.com
 
 // ============================================================================
@@ -23,29 +23,35 @@
 
 import express from 'express';
 import jwt from 'jsonwebtoken';
+import { authorizationCodeGrant } from 'openid-client';
 import { query } from '../lib/db.js';
 import { generateObjectId, generateUUID, generateMagicToken } from '../lib/utils.js';
+import { createLogger } from '../lib/logger.js';
+
+const log = createLogger('members');
 
 // ---------------------------------------------------------------------------
 // GHOST ADMIN API HELPER
 // ---------------------------------------------------------------------------
-// Manual implementation that follows redirects (SDK doesn't handle 301)
+// Manual implementation that handles redirects (SDK doesn't handle 301)
 
 function createGhostApi(baseUrl, publicUrl, adminKey) {
   if (!adminKey || !adminKey.includes(':')) {
-    console.error('❌ Invalid GHOST_ADMIN_API_KEY format! Expected: id:secret');
-    console.error(`   Got: ${adminKey}`);
+    log.error('Invalid GHOST_ADMIN_API_KEY format', { expected: 'id:secret' });
     throw new Error('GHOST_ADMIN_API_KEY must be in format id:secret');
   }
 
   const [id, secret] = adminKey.split(':');
 
-  console.log(`   🔐 API Key ID: ${id}`);
-  console.log(`   🔐 API Secret length: ${secret?.length || 0} chars`);
+  log.debug('Ghost API client initialized', {
+    baseUrl,
+    publicUrl,
+    keyId: id,
+    secretLength: secret?.length || 0
+  });
 
   // Generate JWT for Ghost Admin API authentication
   const generateToken = () => {
-    const iat = Math.floor(Date.now() / 1000);
     return jwt.sign({}, Buffer.from(secret, 'hex'), {
       keyid: id,
       algorithm: 'HS256',
@@ -57,60 +63,68 @@ function createGhostApi(baseUrl, publicUrl, adminKey) {
   const apiRequest = async (endpoint, options = {}) => {
     const token = generateToken();
     const url = `${baseUrl}/ghost/api/admin${endpoint}`;
-
-    // Extract hostname from public URL for Host header
-    // Ghost redirects if Host doesn't match its configured url
     const publicHost = new URL(publicUrl).host;
 
-    console.log(`   🌐 Ghost API request: ${url}`);
-    console.log(`   🏠 Host header: ${publicHost}`);
-    console.log(`   🔑 Token (first 50 chars): ${token.substring(0, 50)}...`);
+    log.http('Ghost API request', {
+      method: options.method || 'GET',
+      url,
+      host: publicHost
+    });
 
     const response = await fetch(url, {
       ...options,
-      redirect: 'manual',  // Don't follow redirects - we want to catch them
+      redirect: 'manual',
       headers: {
         'Authorization': `Ghost ${token}`,
         'Content-Type': 'application/json',
         'Accept': 'application/json',
-        'Host': publicHost,                    // Spoof the hostname
-        'X-Forwarded-Proto': 'https',          // Tell Ghost we're already on HTTPS
-        'X-Forwarded-Host': publicHost,        // Reinforce the hostname
+        'Host': publicHost,
+        'X-Forwarded-Proto': 'https',
+        'X-Forwarded-Host': publicHost,
         ...options.headers
       }
     });
 
-    console.log(`   📨 Response: ${response.status} ${response.statusText}`);
+    log.http('Ghost API response', {
+      status: response.status,
+      statusText: response.statusText
+    });
 
-    // If Ghost still redirects, something is wrong
+    // Handle redirects as errors
     if (response.status >= 300 && response.status < 400) {
       const location = response.headers.get('location');
-      console.error(`   ⚠️ Ghost redirected to: ${location}`);
-      throw new Error(`Ghost redirected instead of responding. Location: ${location}`);
+      log.warn('Ghost API redirected', { location });
+      throw new Error(`Ghost redirected to: ${location}`);
     }
 
     const text = await response.text();
 
-    // Debug: show first 300 chars of response
-    console.log(`   📄 Response body (first 300 chars): ${text.substring(0, 300)}`);
-
     if (!response.ok) {
+      log.error('Ghost API error', {
+        status: response.status,
+        body: text.substring(0, 200)
+      });
       throw new Error(`Ghost API error ${response.status}: ${text.substring(0, 200)}`);
     }
 
-    // Try to parse as JSON
+    // Parse JSON response
     try {
-      return JSON.parse(text);
+      const data = JSON.parse(text);
+      log.debug('Ghost API success', { endpoint });
+      return data;
     } catch (e) {
-      throw new Error(`Ghost returned HTML instead of JSON. Response: ${text.substring(0, 200)}`);
+      log.error('Ghost API returned invalid JSON', {
+        bodyPreview: text.substring(0, 100)
+      });
+      throw new Error(`Ghost returned HTML instead of JSON`);
     }
   };
 
   return {
     members: {
       browse: async (params = {}) => {
-        const query = new URLSearchParams(params).toString();
-        const data = await apiRequest(`/members/?${query}`);
+        const queryStr = new URLSearchParams(params).toString();
+        const data = await apiRequest(`/members/?${queryStr}`);
         return data.members || [];
       },
       add: async (member) => {
@@ -129,31 +143,30 @@ function createGhostApi(baseUrl, publicUrl, adminKey) {
 // ---------------------------------------------------------------------------
 // Returns an Express router configured with the provided OIDC client.
 
-export default function (oidcClient) {
+export default function (oidcConfig) {
   const router = express.Router();
 
-  // Public URL for browser redirects (external)
+  // URL configuration
   const blogUrl = (process.env.BLOG_PUBLIC_URL || '').replace(/\/$/, '');
-
-  // Internal URL for Ghost API calls (Docker network)
   const ghostInternalUrl = (process.env.GHOST_INTERNAL_URL || blogUrl).replace(/\/$/, '');
-
   const apiKey = process.env.GHOST_ADMIN_API_KEY;
 
-  console.log(`📡 Ghost API Config:`);
-  console.log(`   Public URL (redirects): ${blogUrl}`);
-  console.log(`   Internal URL (API): ${ghostInternalUrl}`);
-  console.log(`   Key: ${apiKey ? apiKey.substring(0, 10) + '...' : 'MISSING!'}`);
+  log.info('Member routes initialized', {
+    blogUrl,
+    ghostInternalUrl,
+    apiKeyPresent: !!apiKey
+  });
 
-  // Custom Ghost API client that follows redirects
+  // Ghost API client
   const ghost = createGhostApi(ghostInternalUrl, blogUrl, apiKey);
 
   // ---------------------------------------------------------------------------
   // DEBUG ENDPOINT
   // ---------------------------------------------------------------------------
-  // Test Ghost API connectivity: GET /auth/member/debug
 
   router.get('/debug', async (req, res) => {
+    log.debug('Debug endpoint called');
+
     const results = {
       config: {
         blogUrl,
@@ -165,7 +178,6 @@ export default function (oidcClient) {
       tests: {}
     };
 
-    // Test Ghost API
     try {
       const members = await ghost.members.browse({ limit: 1 });
       results.tests.ghostApi = {
@@ -174,11 +186,13 @@ export default function (oidcClient) {
         isArray: Array.isArray(members),
         count: Array.isArray(members) ? members.length : null
       };
+      log.info('Debug: Ghost API test passed');
     } catch (err) {
       results.tests.ghostApi = {
         success: false,
         error: err.message
       };
+      log.warn('Debug: Ghost API test failed', { error: err.message });
     }
 
     res.json(results);
@@ -187,23 +201,25 @@ export default function (oidcClient) {
   // ---------------------------------------------------------------------------
   // LOGIN ENDPOINT
   // ---------------------------------------------------------------------------
-  // Redirects user to Keycloak authorization endpoint.
-  // Supports ?action=signup to redirect to Keycloak registration page.
 
   router.get('/login', (req, res) => {
     const action = req.query.action;
-    let endpoint = oidcClient.issuer.metadata.authorization_endpoint;
+    const metadata = oidcConfig.serverMetadata();
+    let endpoint = metadata.authorization_endpoint;
 
     const params = new URLSearchParams({
-      client_id: oidcClient.metadata.client_id,
+      client_id: process.env.MEMBER_CLIENT_ID,
       redirect_uri: process.env.MEMBER_CALLBACK_URL,
       response_type: 'code',
       scope: 'openid email profile'
     });
 
-    // Keycloak registration endpoint follows pattern: /auth -> /registrations
+    // Keycloak registration endpoint
     if (action === 'signup') {
       endpoint = endpoint.replace(/\/auth$/, '/registrations');
+      log.info('Login redirect (signup mode)', { endpoint });
+    } else {
+      log.info('Login redirect', { endpoint });
     }
 
     res.redirect(`${endpoint}?${params.toString()}`);
@@ -212,53 +228,54 @@ export default function (oidcClient) {
   // ---------------------------------------------------------------------------
   // LOGOUT ENDPOINT
   // ---------------------------------------------------------------------------
-  // Performs local cookie cleanup and Keycloak Single Logout (SLO).
-  // Uses stored id_token to bypass Keycloak logout confirmation screen.
 
   router.get('/logout', (req, res) => {
     const idToken = req.cookies['kc_member_id_token'];
 
-    // Clear local session cookies
+    log.info('Logout initiated', { hasIdToken: !!idToken });
+
+    // Clear local cookies
     res.clearCookie('ghost-members-ssr', { path: '/' });
     res.clearCookie('kc_member_id_token');
 
-    const endSessionEndpoint = oidcClient.issuer.metadata.end_session_endpoint;
+    const endSessionEndpoint = oidcConfig.serverMetadata().end_session_endpoint;
 
     if (endSessionEndpoint) {
       const params = new URLSearchParams({
-        client_id: oidcClient.metadata.client_id,
+        client_id: process.env.MEMBER_CLIENT_ID,
         post_logout_redirect_uri: blogUrl
       });
 
-      // id_token_hint allows logout without user confirmation
       if (idToken) {
         params.append('id_token_hint', idToken);
       }
 
+      log.debug('Redirecting to Keycloak logout', { endpoint: endSessionEndpoint });
       return res.redirect(`${endSessionEndpoint}?${params.toString()}`);
     }
 
+    log.debug('No end_session_endpoint, redirecting to blog');
     res.redirect(blogUrl);
   });
 
   // ---------------------------------------------------------------------------
   // OIDC CALLBACK ENDPOINT
   // ---------------------------------------------------------------------------
-  // Processes authorization code, provisions member, and issues magic link.
 
   router.get('/callback', async (req, res) => {
-    console.log('🔔 Callback triggered');
-    console.log(`   Query params: ${JSON.stringify(req.query)}`);
-    console.log(`   MEMBER_CALLBACK_URL: ${process.env.MEMBER_CALLBACK_URL}`);
+    log.http('Callback received', { query: Object.keys(req.query) });
 
     try {
-      const params = oidcClient.callbackParams(req);
-      console.log('📥 OIDC params extracted');
+      const currentUrl = new URL(req.protocol + '://' + req.get('host') + req.originalUrl);
+      log.debug('OIDC params extracted');
 
-      const tokenSet = await oidcClient.callback(process.env.MEMBER_CALLBACK_URL, params);
-      console.log('🎫 Token received from Keycloak');
+      const tokenSet = await authorizationCodeGrant(oidcConfig, currentUrl, {
+        redirect_uri: process.env.MEMBER_CALLBACK_URL
+      });
+      const claims = tokenSet.claims();
+      log.info('Token received from Keycloak');
 
-      // Store id_token for SLO (avoids Keycloak confirmation prompt on logout)
+      // Store id_token for SLO
       res.cookie('kc_member_id_token', tokenSet.id_token, {
         httpOnly: true,
         secure: true,
@@ -266,44 +283,37 @@ export default function (oidcClient) {
         maxAge: 3600000
       });
 
-      const userEmail = tokenSet.claims().email;
-      const userName = tokenSet.claims().name;
+      const userEmail = claims.email;
+      const userName = claims.name;
 
-      console.log(`🔍 Looking up member: ${userEmail}`);
-      console.log(`   Calling: ${ghostInternalUrl}/ghost/api/admin/members/`);
+      log.info('Processing member authentication', { email: userEmail });
 
-      // Auto-provision: create Ghost member if not exists
+      // Check if member exists
       let members;
       try {
-        const browseResult = await ghost.members.browse({ filter: `email:'${userEmail}'` });
-        console.log(`📦 Ghost API raw response type: ${typeof browseResult}`);
-        console.log(`📦 Ghost API raw response: ${JSON.stringify(browseResult)?.substring(0, 200)}`);
-        members = browseResult;
+        members = await ghost.members.browse({ filter: `email:'${userEmail}'` });
       } catch (apiErr) {
-        console.error('❌ Ghost API browse error:', apiErr.message);
-        console.error('   Full error:', apiErr);
+        log.error('Ghost API browse failed', { error: apiErr.message });
         throw new Error(`Ghost API unreachable: ${apiErr.message}`);
       }
 
-      // Handle case where API returns unexpected response
       if (!Array.isArray(members)) {
-        console.error('❌ Ghost API returned non-array:', typeof members, members);
+        log.error('Ghost API returned invalid response', { type: typeof members });
         throw new Error('Ghost API returned invalid response');
       }
 
-      console.log(`📊 Members found: ${members.length}`);
-
+      // Auto-provision member
       if (members.length === 0) {
-        console.log(`➕ Creating new member: ${userEmail}`);
+        log.info('Creating new member', { email: userEmail, name: userName });
         await ghost.members.add({
           email: userEmail,
           name: userName
         });
       } else {
-        console.log(`✅ Member found: ${userEmail}`);
+        log.debug('Member exists', { email: userEmail, memberId: members[0].id });
       }
 
-      // Generate magic link token and insert into Ghost tokens table
+      // Generate magic token
       const token = generateMagicToken();
       const now = new Date();
 
@@ -320,12 +330,14 @@ export default function (oidcClient) {
         ]
       );
 
-      // Redirect to Ghost magic link handler for session establishment
+      log.info('Magic token created, redirecting', { email: userEmail });
       res.redirect(`${blogUrl}/members/?token=${token}`);
 
     } catch (err) {
-      console.error('❌ Member callback error:', err.message);
-      console.error('   Stack:', err.stack);
+      log.error('Callback failed', {
+        error: err.message,
+        stack: err.stack
+      });
       res.status(500).send(`Authentication failed: ${err.message}`);
     }
   });

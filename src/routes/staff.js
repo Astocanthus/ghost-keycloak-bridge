@@ -1,4 +1,4 @@
-// Author : Benjamin Romeo (Astocanthus)
+// Copyright (C) - LOW-LAYER
 // Contact : contact@low-layer.com
 
 // ============================================================================
@@ -13,8 +13,6 @@
 // Key Functions:
 //   - GET /login: Initiates OIDC authorization flow
 //   - GET /callback: Validates user, creates session, sets signed cookie
-//   - generateGhostSessionId(): Creates URL-safe session identifiers
-//   - signCookie(): Implements Ghost's express-session signature format
 //
 // Characteristics:
 //   - Requires user to pre-exist in Ghost users table (no auto-provisioning)
@@ -24,25 +22,12 @@
 
 import express from 'express';
 import crypto from 'crypto';
+import { buildAuthorizationUrl, authorizationCodeGrant } from 'openid-client';
 import { query } from '../lib/db.js';
-import { generateObjectId } from '../lib/utils.js';
+import { generateObjectId, generateSessionId } from '../lib/utils.js';
+import { createLogger } from '../lib/logger.js';
 
-// ---------------------------------------------------------------------------
-// SESSION ID GENERATOR
-// ---------------------------------------------------------------------------
-// Creates URL-safe base64 session identifiers matching Ghost's format.
-
-/**
- * Generates a 32-character URL-safe session ID.
- * @returns {string} Base64 URL-safe session identifier
- */
-const generateGhostSessionId = () => {
-  return crypto.randomBytes(24)
-    .toString('base64')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/, '');
-};
+const log = createLogger('staff');
 
 // ---------------------------------------------------------------------------
 // COOKIE SIGNATURE
@@ -70,75 +55,95 @@ const signCookie = (val, secret) => {
 // ---------------------------------------------------------------------------
 // Returns an Express router configured with the provided OIDC client.
 
-export default function (oidcClient) {
+export default function (oidcConfig) {
   const router = express.Router();
+
+  const blogUrl = (process.env.BLOG_PUBLIC_URL || '').replace(/\/$/, '');
+
+  log.info('Staff routes initialized', { blogUrl });
 
   // ---------------------------------------------------------------------------
   // LOGIN ENDPOINT
   // ---------------------------------------------------------------------------
-  // Redirects staff user to Keycloak authorization endpoint.
 
   router.get('/login', (req, res) => {
-    res.redirect(oidcClient.authorizationUrl({
+    const authUrl = buildAuthorizationUrl(oidcConfig, {
       scope: 'openid email profile',
       redirect_uri: process.env.STAFF_CALLBACK_URL
-    }));
+    });
+
+    log.info('Staff login redirect', {
+      redirectUri: process.env.STAFF_CALLBACK_URL
+    });
+
+    res.redirect(authUrl.href);
   });
 
   // ---------------------------------------------------------------------------
   // OIDC CALLBACK ENDPOINT
   // ---------------------------------------------------------------------------
-  // Validates staff user exists in Ghost, creates admin session, sets cookie.
 
   router.get('/callback', async (req, res) => {
-    try {
-      const params = oidcClient.callbackParams(req);
-      const tokenSet = await oidcClient.callback(process.env.STAFF_CALLBACK_URL, params);
-      const email = tokenSet.claims().email;
+    log.http('Staff callback received', { query: Object.keys(req.query) });
 
-      // Verify user exists in Ghost with active-ish status
+    try {
+      const currentUrl = new URL(req.protocol + '://' + req.get('host') + req.originalUrl);
+      const tokenSet = await authorizationCodeGrant(oidcConfig, currentUrl, {
+        redirect_uri: process.env.STAFF_CALLBACK_URL
+      });
+      const claims = tokenSet.claims();
+      const email = claims.email;
+
+      log.info('Staff token received', { email });
+
+      // Verify user exists in Ghost
       const users = await query(
         "SELECT id FROM users WHERE email = ? AND status IN ('active', 'warn-1', 'warn-2', 'warn-3', 'locked')",
         [email]
       );
 
       if (users.length === 0) {
+        log.warn('Staff user not found in Ghost', { email });
         return res.redirect('/auth/admin/login?error=user_not_found');
       }
 
       const userId = users[0].id;
+      log.debug('Staff user found', { email, userId });
 
-      // Retrieve Ghost's session signing secret from database
+      // Retrieve Ghost session secret
       const settings = await query("SELECT value FROM settings WHERE `key` = 'admin_session_secret'");
 
       if (settings.length === 0) {
-        console.error('❌ Fatal: admin_session_secret not found in database');
+        log.error('admin_session_secret not found in Ghost settings');
         return res.redirect('/auth/admin/login?error=fatal_config');
       }
 
       const ghostSessionSecret = settings[0].value;
 
-      // Generate session identifiers and timestamps
-      const sessionId = generateGhostSessionId();
+      // Generate session data
+      const sessionId = generateSessionId();
       const rowId = generateObjectId();
       const now = new Date();
       const expiresAt = new Date(Date.now() + 15552000000); // 180 days
 
-      // Extract real client IP (respects X-Real-IP from Nginx)
+      // Extract real client IP
       let userIp = req.headers['x-real-ip']
         || req.headers['x-forwarded-for']
         || req.socket.remoteAddress
         || '127.0.0.1';
 
-      // Handle proxy chains: take first IP (original client)
       if (userIp.includes(',')) {
         userIp = userIp.split(',')[0].trim();
       }
 
       const userAgent = req.headers['user-agent'] || 'Mozilla/5.0';
-      const origin = (process.env.BLOG_PUBLIC_URL || '').replace(/\/$/, '');
 
-      // Build session data JSON matching Ghost's expected schema
+      log.debug('Session metadata', {
+        clientIp: userIp,
+        userAgent: userAgent.substring(0, 50)
+      });
+
+      // Build session JSON
       const sessionData = JSON.stringify({
         cookie: {
           originalMaxAge: 15552000000,
@@ -149,20 +154,27 @@ export default function (oidcClient) {
           sameSite: 'none'
         },
         user_id: userId,
-        origin: origin,
+        origin: blogUrl,
         user_agent: userAgent,
         ip: userIp,
         verified: true
       });
 
-      // Insert session record into Ghost sessions table
+      // Insert session into database
       await query(
         `INSERT INTO sessions (id, session_id, user_id, session_data, created_at, updated_at) 
                  VALUES (?, ?, ?, ?, ?, ?)`,
         [rowId, sessionId, userId, sessionData, now, now]
       );
 
-      // Sign and set the admin session cookie
+      log.info('Staff session created', {
+        email,
+        userId,
+        sessionId: sessionId.substring(0, 8) + '...',
+        expiresAt: expiresAt.toISOString()
+      });
+
+      // Sign and set cookie
       const signedCookie = signCookie(sessionId, ghostSessionSecret);
 
       res.cookie('ghost-admin-api-session', signedCookie, {
@@ -173,11 +185,14 @@ export default function (oidcClient) {
         sameSite: 'none'
       });
 
-      console.log(`🚀 Admin session created for ${email} (IP: ${userIp})`);
-      res.redirect(`${process.env.BLOG_PUBLIC_URL}/ghost/`);
+      log.info('Staff login successful, redirecting to admin', { email });
+      res.redirect(`${blogUrl}/ghost/`);
 
     } catch (err) {
-      console.error('❌ Staff callback error:', err);
+      log.error('Staff callback failed', {
+        error: err.message,
+        stack: err.stack
+      });
       res.redirect('/auth/admin/login?error=fatal');
     }
   });

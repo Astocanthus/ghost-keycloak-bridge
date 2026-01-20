@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset='utf-8'>
-  <title>ghost-keycloak-bridge 1.0.0 | Documentation</title>
+  <title>ghost-keycloak-bridge 1.1.0 | Documentation</title>
   <meta name='description' content='A bridge to authenticate Ghost members using Keycloak (OIDC)'>
   <meta name='viewport' content='width=device-width,initial-scale=1'>
   <link href='assets/bass.css' rel='stylesheet'>
@@ -15,7 +15,7 @@
       <div id='split-left' class='overflow-auto fs0 height-viewport-100'>
         <div class='py1 px2'>
           <h3 class='mb0 no-anchor'>ghost-keycloak-bridge</h3>
-          <div class='mb1'><code>1.0.0</code></div>
+          <div class='mb1'><code>1.1.0</code></div>
           <input
             placeholder='Filter'
             id='filter-input'
@@ -52,6 +52,26 @@
                   href='#isstaffempty'
                   class="">
                   isStaffEmpty
+                  
+                </a>
+                
+                </li>
+              
+                
+                <li><a
+                  href='#testconnection'
+                  class="">
+                  testConnection
+                  
+                </a>
+                
+                </li>
+              
+                
+                <li><a
+                  href='#createlogger'
+                  class="">
+                  createLogger
                   
                 </a>
                 
@@ -99,9 +119,9 @@
               
                 
                 <li><a
-                  href='#generateghostsessionid'
+                  href='#generatesessionid'
                   class="">
-                  generateGhostSessionId
+                  generateSessionId
                   
                 </a>
                 
@@ -168,7 +188,8 @@
       
         <div class='space-bottom0'>
           <div>
-            <span class='code bold'>params</span> <code class='quiet'>(<a href="https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>)</code>
+            <span class='code bold'>params</span> <code class='quiet'>(<a href="https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Array">Array</a>
+            = <code>[]</code>)</code>
 	    Values to bind to placeholders
 
           </div>
@@ -311,6 +332,144 @@ Used to detect fresh installations requiring setup.</p>
 
   
 
+  
+
+  
+
+  
+
+  
+
+  
+</section>
+
+          
+        
+          
+          <section class='p2 mb2 clearfix bg-white minishadow'>
+
+  
+  <div class='clearfix'>
+    
+    <h3 class='fl m0' id='testconnection'>
+      testConnection
+    </h3>
+    
+    
+  </div>
+  
+
+  <p>Tests database connectivity.</p>
+
+    <div class='pre p1 fill-light mt0'>testConnection</div>
+  
+  
+
+  
+  
+  
+  
+  
+  
+
+  
+
+  
+
+  
+    
+      <div class='py1 quiet mt1 prose-big'>Returns</div>
+      <code><a href="https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Promise">Promise</a>&#x3C;<a href="https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Boolean">boolean</a>></code>:
+        True if connection successful
+
+      
+    
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+
+  
+</section>
+
+          
+        
+          
+          <section class='p2 mb2 clearfix bg-white minishadow'>
+
+  
+  <div class='clearfix'>
+    
+    <h3 class='fl m0' id='createlogger'>
+      createLogger
+    </h3>
+    
+    
+  </div>
+  
+
+  <p>Creates a child logger with module context.</p>
+
+    <div class='pre p1 fill-light mt0'>createLogger</div>
+  
+  
+
+  
+  
+  
+  
+  
+  
+
+  
+    <div class='py1 quiet mt1 prose-big'>Parameters</div>
+    <div class='prose'>
+      
+        <div class='space-bottom0'>
+          <div>
+            <span class='code bold'>moduleName</span> <code class='quiet'>(<a href="https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/String">string</a>)</code>
+	    Name of the module (e.g., 'members', 'staff', 'db')
+
+          </div>
+          
+        </div>
+      
+    </div>
+  
+
+  
+
+  
+    
+      <div class='py1 quiet mt1 prose-big'>Returns</div>
+      <code>winston.Logger</code>:
+        Child logger instance
+
+      
+    
+  
+
+  
+
+  
+
+  
+    <div class='py1 quiet mt1 prose-big'>Example</div>
+    
+      
+      <pre class='p1 overflow-auto round fill-light'><span class="hljs-keyword">const</span> log = <span class="hljs-title function_">createLogger</span>(<span class="hljs-string">&#x27;members&#x27;</span>);
+log.<span class="hljs-title function_">info</span>(<span class="hljs-string">&#x27;User authenticated&#x27;</span>, { <span class="hljs-attr">email</span>: <span class="hljs-string">&#x27;user@example.com&#x27;</span> });
+<span class="hljs-comment">// Output: 10:30:45.123 info [members] User authenticated {&quot;email&quot;:&quot;user@example.com&quot;}</span></pre>
+    
   
 
   
@@ -589,17 +748,17 @@ Produces cookies in the format: s:.</p>
   
   <div class='clearfix'>
     
-    <h3 class='fl m0' id='generateghostsessionid'>
-      generateGhostSessionId
+    <h3 class='fl m0' id='generatesessionid'>
+      generateSessionId
     </h3>
     
     
   </div>
   
 
-  <p>Generates a 32-character URL-safe session ID.</p>
+  <p>Generates a 32-character URL-safe session ID for Ghost admin sessions.</p>
 
-    <div class='pre p1 fill-light mt0'>generateGhostSessionId</div>
+    <div class='pre p1 fill-light mt0'>generateSessionId</div>
   
   
 
